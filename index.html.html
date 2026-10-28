@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Zielkompass</title>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--tx:#1b1b18;--mut:#6b6a63;--ac:#0f766e;--bd:#dcdad2;--warn:#b45309;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14140f;--card:#1f1f19;--tx:#efeee8;--mut:#a09f95;--ac:#2dd4bf;--bd:#33332b;--warn:#fbbf24}}
+:root[data-theme="dark"]{--bg:#14140f;--card:#1f1f19;--tx:#efeee8;--mut:#a09f95;--ac:#2dd4bf;--bd:#33332b;--warn:#fbbf24}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:460px;margin:0 auto;padding:16px}
+h1{font-size:1.3rem;margin:0 0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+label{display:block;font-size:.8rem;color:var(--mut);margin-bottom:4px}
+input{width:100%;box-sizing:border-box;padding:11px;font-size:1rem;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx)}
+.row{display:flex;gap:10px;margin-bottom:10px}.row>div{flex:1}
+button{padding:12px 14px;font-size:1rem;border:0;border-radius:10px;background:var(--ac);color:var(--bg);font-weight:600;width:100%}
+button.sec{background:transparent;color:var(--tx);border:1px solid var(--bd);margin-top:8px}
+#dial{display:block;margin:0 auto;width:min(78vw,300px);height:auto}
+#dist{font-size:2.4rem;font-weight:700;text-align:center}
+#info{text-align:center;color:var(--mut);font-size:.9rem}
+#msg{text-align:center;color:var(--warn);font-size:.9rem;min-height:1.2em;margin-top:6px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>Zielkompass</h1>
+
+<div class="card" id="setup">
+  <label for="paste">Koordinaten einfügen (z. B. 48.1371, 11.5754)</label>
+  <input id="paste" placeholder="48.1371, 11.5754" inputmode="text" style="margin-bottom:10px">
+  <div class="row">
+    <div><label for="lat">Breitengrad</label><input id="lat" inputmode="decimal" placeholder="48.1371"></div>
+    <div><label for="lon">Längengrad</label><input id="lon" inputmode="decimal" placeholder="11.5754"></div>
+  </div>
+  <button id="go">Navigation starten</button>
+  <button class="sec" id="here">Aktuelle Position als Ziel speichern</button>
+  <div id="msg"></div>
+</div>
+
+<div class="card hide" id="nav">
+  <svg id="dial" viewBox="-110 -110 220 220" aria-label="Kompass">
+    <circle r="100" fill="none" stroke="var(--bd)" stroke-width="3"/>
+    <g id="ring">
+      <text y="-82" text-anchor="middle" font-size="16" font-weight="700" fill="var(--warn)">N</text>
+      <text x="86" y="6" text-anchor="middle" font-size="14" fill="var(--mut)">O</text>
+      <text y="96" text-anchor="middle" font-size="14" fill="var(--mut)">S</text>
+      <text x="-86" y="6" text-anchor="middle" font-size="14" fill="var(--mut)">W</text>
+    </g>
+    <g id="arrow"><path d="M0-70 L22 20 L0 8 L-22 20 Z" fill="var(--ac)"/></g>
+  </svg>
+  <div id="dist">–</div>
+  <div id="info">Warte auf GPS …</div>
+  <button class="sec" id="stop">Zurück / Ziel ändern</button>
+</div>
+</main>
+
+<script>
+var target=null, pos=null, heading=null, watchId=null;
+var $=function(i){return document.getElementById(i)};
+function msg(t){$('msg').textContent=t||''}
+
+try{var s=localStorage.getItem('ziel');if(s){var o=JSON.parse(s);$('lat').value=o.lat;$('lon').value=o.lon}}catch(e){}
+
+function num(v){return parseFloat(String(v).trim().replace(',','.'))}
+
+$('paste').addEventListener('input',function(){
+  var t=this.value, n;
+  if(t.indexOf('.')>-1){n=t.match(/-?\d+(?:\.\d+)?/g)}
+  else{n=t.replace(/,/g,'.').match(/-?\d+(?:\.\d+)?/g)}
+  if(n&&n.length>=2){$('lat').value=n[0];$('lon').value=n[1]}
+});
+
+function rad(d){return d*Math.PI/180}
+function dist(a,b,c,d){
+  var R=6371000,p1=rad(a),p2=rad(c),dp=rad(c-a),dl=rad(d-b);
+  var x=Math.sin(dp/2)*Math.sin(dp/2)+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)*Math.sin(dl/2);
+  return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+}
+function bearing(a,b,c,d){
+  var p1=rad(a),p2=rad(c),dl=rad(d-b);
+  var y=Math.sin(dl)*Math.cos(p2),x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+  return (Math.atan2(y,x)*180/Math.PI+360)%360;
+}
+function card(b){var n=['N','NO','O','SO','S','SW','W','NW'];return n[Math.round(b/45)%8]}
+function fmt(m){return m<1000?Math.round(m)+' m':(m/1000).toFixed(m<10000?2:1).replace('.',',')+' km'}
+
+function update(){
+  if(!pos||!target)return;
+  var d=dist(pos.lat,pos.lon,target.lat,target.lon);
+  var b=bearing(pos.lat,pos.lon,target.lat,target.lon);
+  $('dist').textContent=fmt(d);
+  var txt='Richtung '+Math.round(b)+'° ('+card(b)+')  ·  Genauigkeit ±'+Math.round(pos.acc)+' m';
+  if(heading===null){
+    $('arrow').setAttribute('transform','rotate('+b+')');
+    $('ring').setAttribute('transform','rotate(0)');
+    txt+='\nKein Kompass: Pfeil zeigt relativ zu Norden.';
+  }else{
+    $('arrow').setAttribute('transform','rotate('+(b-heading)+')');
+    $('ring').setAttribute('transform','rotate('+(-heading)+')');
+  }
+  $('info').style.whiteSpace='pre-line';
+  $('info').textContent=txt;
+}
+
+function onOri(e){
+  var h=null;
+  if(typeof e.webkitCompassHeading==='number')h=e.webkitCompassHeading;
+  else if(e.absolute&&e.alpha!==null)h=(360-e.alpha)%360;
+  if(h!==null){heading=h;update()}
+}
+
+function startOri(){
+  try{
+    if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+      DeviceOrientationEvent.requestPermission().then(function(r){
+        if(r==='granted')window.addEventListener('deviceorientation',onOri,true);
+      }).catch(function(){});
+    }else{
+      window.addEventListener('deviceorientationabsolute',onOri,true);
+      window.addEventListener('deviceorientation',onOri,true);
+    }
+  }catch(e){}
+}
+
+function startGPS(){
+  if(!navigator.geolocation){$('info').textContent='Dieses Gerät unterstützt kein GPS.';return}
+  watchId=navigator.geolocation.watchPosition(function(p){
+    pos={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy};update();
+  },function(err){
+    $('info').textContent=err.code===1?'Standortzugriff verweigert. Bitte in den Browser-Einstellungen erlauben.':'Standort nicht verfügbar.';
+  },{enableHighAccuracy:true,maximumAge:1000,timeout:20000});
+}
+
+$('go').onclick=function(){
+  var la=num($('lat').value),lo=num($('lon').value);
+  if(isNaN(la)||isNaN(lo)||Math.abs(la)>90||Math.abs(lo)>180){msg('Bitte gültige Koordinaten eingeben (Breite −90…90, Länge −180…180).');return}
+  msg('');target={lat:la,lon:lo};
+  try{localStorage.setItem('ziel',JSON.stringify(target))}catch(e){}
+  $('setup').classList.add('hide');$('nav').classList.remove('hide');
+  startOri();startGPS();update();
+};
+
+$('stop').onclick=function(){
+  if(watchId!==null)navigator.geolocation.clearWatch(watchId);
+  watchId=null;pos=null;
+  $('nav').classList.add('hide');$('setup').classList.remove('hide');
+  $('info').textContent='Warte auf GPS …';$('dist').textContent='–';
+};
+
+$('here').onclick=function(){
+  if(!navigator.geolocation){msg('Kein GPS verfügbar.');return}
+  msg('Position wird ermittelt …');
+  navigator.geolocation.getCurrentPosition(function(p){
+    $('lat').value=p.coords.latitude.toFixed(6);$('lon').value=p.coords.longitude.toFixed(6);
+    msg('Aktuelle Position übernommen.');
+  },function(){msg('Standort nicht verfügbar. Zugriff erlauben?')},{enableHighAccuracy:true,timeout:15000});
+};
+</script>
+</body>
+</html>
